@@ -1,0 +1,79 @@
+## Course Project
+
+### Summary
+Objectives:
+
+1. Use activity monitors data to predict activity quality, the "classe" variable in the training set.
+2. Estimate out-of-sample error with cross-validation.
+
+Because the outcome is categorical, Random-Forests is best for classification modeling. Plus it can achieve high prediction accuracy though its disadvantages are slow speed, interpretability and overfitting. 3-fold cross validation with training set is used to estimate expected out-of-sample error.
+
+### Experiment & Analysis
+#### Out-Of-Sample Error Estimation with Cross Validation
+Because the data was recorded in order of time, it's conservative to use K-fold cross validation to split the training set in chunk. The training data set is split into 3-fold. A model is built on each sub-training sets then evaluated on corresponding sub-testing sets and then obtain the estimated out-of-sample error with just the training set. 
+
+#### Preprocessing
+Since random forests are computationally intensive, removing unrelated predictors could shorten the computing time greatly: 
+
+1. Removed the first 7 variables including index, username, time-stamps and time windows, which are obviously not predictors.
+2. Removed zero and near zero variance predictors.
+3. Removed predictors with more than 25% of NA values. 
+
+These methods reduced the number of predictors from 160 to 53.
+```{r preprocess, echo = T, cache=TRUE}
+library(caret)
+library(doMC)   # Parallel processing
+registerDoMC(cores = 2)
+set.seed(7302)
+
+training <- read.csv("pml-training.csv")
+testing <- read.csv("pml-testing.csv")
+
+# Clean Data
+# remove near zero variance variables and unrelated variables
+training.f0 <- training[, -1:-7]
+nzv <- nearZeroVar(training.f0)
+training.f1 <- training.f0[, -nzv]
+
+# keep variables that have < 25% of NA values 
+training.f2 <- training.f1[, colSums(is.na(training.f1))/nrow(training.f1) < 0.25]
+```
+
+#### Modeling with Random Forest
+Out-of-bag (oob) as the resampling option for `trainControl` is used because [oob is robust enough for random-forest and there's no need for cross-validation or a separate test set to get an unbiased estimate of the test set error](http://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#ooberr). `{doMC}` package is used to enable parallel process to speed up the computation.
+```{r rf, echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+# Slice training data into 3-fold to estimate out-of-sample error
+folds <- createFolds(training.f2$class, k = 3, list = T, returnTrain = T)
+
+fold.trains <- lapply(folds, function(x)  training.f2[x, ])
+fold.tests <- lapply(folds, function(x)  training.f2[-x, ])
+
+fitControl <- trainControl(method = "oob", number = 3, verboseIter = T)
+
+fold.fits <- lapply(fold.trains,
+                    function(x) train(classe ~ ., data = x, method = "rf",
+                                      trControl = fitControl, verbose = T))
+fold.results <- lapply(1 : length(folds), function(x) {
+                       confusionMatrix(data = predict(fold.fits[[x]],
+                                                      fold.tests[[x]]),
+                                       reference = fold.tests[[x]]$classe)})
+accuracies <- sapply(fold.results, function(x) x$overall[1])
+errors.out <- 1 - accuracies
+
+# computes the average out-of-sample error
+avg.errors.out <- mean(errors.out)    
+
+fit.best <- fold.fits[[which.max(accuracies)]]
+# Final Test
+answers <- as.character(predict(fit.best, testing))
+```
+Prediction result of the best model-fit:
+```{r res, echo=FALSE}
+fold.results[[which.max(accuracies)]]
+```
+
+### Conclusion
+The average of the estimated out-of-sample error from 3-folded training data is `r round(avg.errors.out, 4)` and the average prediction accuracy is `r 1 - round(avg.errors.out, 4)`. The random forests method produced highly accurate model.
+
+### Reference
+Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. [Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements.](http://groupware.les.inf.puc-rio.br/har#ixzz3PpFlPQGX) Proceedings of 21st Brazilian Symposium on Artificial Intelligence. Advances in Artificial Intelligence - SBIA 2012. In: Lecture Notes in Computer Science. , pp. 52-61. Curitiba, PR: Springer Berlin / Heidelberg, 2012. ISBN 978-3-642-34458-9. DOI: 10.1007/978-3-642-34459-6_6. 
